@@ -18,6 +18,10 @@ Qué revisa
     - transfer_flag booleano, y consistente: transferencia <=> fare_amount == 0.0.
   WARN (cumple el esquema pero se aleja de los valores objetivo):
     - ~3.000 tarjetas distintas, 20-30 rutas, transferencias entre 5% y 40%.
+  Columnas del W2 (opcionales; si están se validan, FAIL si están mal):
+    - stream_seq entero, creciente y en orden de timestamp.
+    - vehicle_id = "<route_id>-V" + 2 dígitos (p. ej. L-A-V03).
+  INFO: % de duplicados (misma tarjeta y vehículo a <= 60 s),
   INFO: periodo simulado, popularidad de rutas (Zipf), hora pico detectada y su fuerza,
         distribución por hora.
 
@@ -49,6 +53,9 @@ Decisiones (y por qué)
    pandas lo convierta.
 6. Transferencias entre 5% y 40% (2026-10-18): el generador sortea el % en ese rango para
    cada dataset (p. ej. 23,7% en 10k y 5,5% en 100k), así que no se exige ~20%.
+7. Columnas del W2 (2026-10-23): el generador v2 agrega stream_seq y vehicle_id al final y
+   ~2% de taps duplicados. Son opcionales (un CSV del W1 sin ellas sigue siendo válido);
+   los duplicados son esperados, así que se reportan como INFO.
 
 Uso
 ---
@@ -70,6 +77,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TAPS_CANDIDATES = [ROOT / "data" / "taps.csv", ROOT / "data" / "taps_10k.csv"]
 
 EXPECTED_COLUMNS = ["tap_id", "timestamp", "card_id", "route_id", "station", "fare_amount", "transfer_flag"]
+STREAM_COLUMNS = ["stream_seq", "vehicle_id"]   # columnas opcionales del W2 (decisión 7)
+DUP_WINDOW_S = 60                               # duplicado = misma tarjeta y vehículo a <= 60 s
 MIN_ROWS = 10_000
 
 # Valores objetivo del esquema (solo generan WARN, no FAIL).
@@ -125,15 +134,38 @@ def pct(x: float) -> str:
 
 def check_columns(df: pd.DataFrame, r: Report) -> bool:
     missing = [c for c in EXPECTED_COLUMNS if c not in df.columns]
-    extra = [c for c in df.columns if c not in EXPECTED_COLUMNS]
+    extra = [c for c in df.columns if c not in EXPECTED_COLUMNS + STREAM_COLUMNS]
     if missing:
         r.fail(f"Faltan columnas: {missing}")
     if extra:
         r.fail(f"Columnas que no están en el esquema: {extra}")
     if not missing and not extra:
-        r.ok(f"Columnas: las 7 del esquema {EXPECTED_COLUMNS}")
+        w2 = [c for c in STREAM_COLUMNS if c in df.columns]
+        r.ok(f"Columnas: las 7 del esquema {EXPECTED_COLUMNS}" + (f" + las del W2 {w2}" if w2 else ""))
     # Sin las 7 columnas no tiene sentido seguir: los demás chequeos fallarían en cascada.
     return not missing
+
+
+def check_stream(df: pd.DataFrame, parsed: dict, r: Report) -> None:
+    """Columnas del W2: stream_seq creciente en orden de tiempo, vehicle_id y duplicados."""
+    if "stream_seq" in df.columns:
+        seq = pd.to_numeric(df["stream_seq"], errors="coerce")
+        ok = seq.notna().all() and seq.is_monotonic_increasing and seq.is_unique
+        r.check(ok, "stream_seq entero, creciente y sin repetidos",
+                "stream_seq no es un entero creciente sin repetidos (el CSV debe venir en orden de stream)")
+        ts = parsed["ts"]
+        r.check(ts.is_monotonic_increasing, "stream_seq sigue el orden de timestamp",
+                "el orden de stream_seq no coincide con el de timestamp")
+    if "vehicle_id" in df.columns:
+        bad = df.loc[~(df["vehicle_id"].str.fullmatch(r".+-V\d{2}") &
+                       (df["vehicle_id"].str.rsplit("-V", n=1).str[0] == df["route_id"])), "vehicle_id"]
+        r.check(bad.empty, 'vehicle_id con formato "<ruta>-V" + 2 dígitos',
+                f"vehicle_id inválido en {len(bad):,} filas, p. ej. {examples(bad)}")
+        # Duplicados: la misma tarjeta en el mismo vehículo a <= DUP_WINDOW_S segundos.
+        t = pd.DataFrame({"card": df["card_id"], "veh": df["vehicle_id"], "ts": parsed["ts"]}).sort_values("ts", kind="stable")
+        gap = t.groupby(["card", "veh"])["ts"].diff().dt.total_seconds()
+        n_dup = int(gap.between(0, DUP_WINDOW_S).sum())
+        r.info(f"Duplicados (misma tarjeta y vehículo a <= {DUP_WINDOW_S} s): {n_dup:,} ({pct(n_dup / len(df))})")
 
 
 def check_formats(df: pd.DataFrame, r: Report) -> dict:
@@ -285,6 +317,9 @@ def main() -> int:
         check_targets(df, parsed, r)
         print("\nHora pico")
         check_peak(df, parsed, r)
+        if any(c in df.columns for c in STREAM_COLUMNS):
+            print("\nStream (W2)")
+            check_stream(df, parsed, r)
 
     print(f"\nResultado: {r.fails} FAIL, {r.warns} WARN -> "
           + ("el CSV NO cumple el esquema" if r.fails else "el CSV cumple el esquema"))

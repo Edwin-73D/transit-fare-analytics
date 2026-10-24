@@ -22,6 +22,15 @@ Cambios (integración, 2026-10-23)
 5. Corrido como script escribe también data/taps.csv = la versión de 100k, que es el dataset
    OFICIAL del proyecto (decisión del equipo, 2026-10-23). Todos los scripts buscan primero
    data/taps.csv, así que todos usan los mismos datos.
+6. Generador v2 para el Workshop 2 (2026-10-23):
+   - vehicle_id se asigna en generar() (antes en armar_stream), con el formato de Felipe
+     "L-A-V03": 6 trenes por línea de metro y 10 buses por ruta;
+   - ~2% de taps DUPLICADOS (DUPLICADOS = 0.02): copia de un tap al azar (misma tarjeta, ruta,
+     estación, vehículo, tarifa y transfer_flag) entre 2 y 30 s después, como un doble tap
+     accidental. Sirven para probar el Bloom filter del W2. Los CSV siguen teniendo exactamente
+     n filas: se generan n - duplicados taps base y se agregan los duplicados;
+   - se ordena por tiempo, se renumera tap_id y se agrega stream_seq = 1..n (orden del stream).
+   Columnas nuevas al final: stream_seq, vehicle_id.
 Lo demás (semilla, tarjetas, rutas Zipf, tarifas en COP, timestamps, % de transferencias
 sorteado entre 5% y 40%) no cambió.
 """
@@ -51,8 +60,38 @@ TARIFAS = np.array([3300.0] * 5 + [3000.0] * 20)    # COP, el metro cuesta más
 PESOS = 1 / np.arange(1, len(RUTAS) + 1) ** 1.1
 PESOS = PESOS / PESOS.sum()
 
+DUPLICADOS = 0.02                                   # Cambio 6: fracción de taps duplicados
+DUP_SEGUNDOS = (2, 30)                              # el duplicado llega entre 2 y 30 s después
+
 
 def generar(n, seed=SEED):
+    # Cambio 6: se generan n - n_dup taps base y después se agregan n_dup duplicados.
+    n_dup = round(DUPLICADOS * n)
+    base = _generar_base(n - n_dup, seed)
+    return _agregar_duplicados(base, n_dup, seed)
+
+
+def _vehiculos(rutas, gen):
+    # Cambio 6 (antes en armar_stream): vehículo de cada tap, "L-A-V03" (6 trenes por línea,
+    # 10 buses por ruta)
+    unidades = np.where(pd.Series(rutas).str.startswith("L-"), 6, 10)
+    return pd.Series(rutas) + "-V" + pd.Series(gen.integers(1, unidades + 1)).astype(str).str.zfill(2)
+
+
+def _agregar_duplicados(base, n_dup, seed):
+    # Cambio 6: copia n_dup taps al azar unos segundos después (doble tap), ordena por tiempo,
+    # renumera tap_id y agrega stream_seq.
+    g = np.random.default_rng(seed + 2)
+    dup = base.iloc[g.choice(len(base), n_dup, replace=False)].copy()
+    dup["timestamp"] = dup["timestamp"] + pd.to_timedelta(g.integers(DUP_SEGUNDOS[0], DUP_SEGUNDOS[1] + 1, n_dup), unit="s")
+    s = pd.concat([base, dup]).sort_values("timestamp", kind="stable").reset_index(drop=True)
+    s["tap_id"] = ["T%08d" % i for i in range(1, len(s) + 1)]
+    s["stream_seq"] = np.arange(1, len(s) + 1)
+    s["vehicle_id"] = s.pop("vehicle_id")              # columnas nuevas al final
+    return s
+
+
+def _generar_base(n, seed=SEED):
     g = np.random.default_rng(seed)
 
     # las 3000 tarjetas salen al menos una vez, el resto al azar
@@ -70,14 +109,16 @@ def generar(n, seed=SEED):
     primer_tap = ~pd.Series(tarjetas).duplicated().to_numpy()
     transfer &= ~primer_tap
 
+    rutas = [RUTAS[r] for r in ruta]
     return pd.DataFrame({
         "tap_id": ["T%08d" % i for i in range(1, n + 1)],
         "timestamp": INICIO + pd.to_timedelta(segundos, unit="s"),
         "card_id": ["C%06d" % t for t in tarjetas],
-        "route_id": [RUTAS[r] for r in ruta],
+        "route_id": rutas,
         "station": estacion,
         "fare_amount": np.where(transfer, 0.0, TARIFAS[ruta]),    # la transferencia no cobra
         "transfer_flag": transfer,
+        "vehicle_id": _vehiculos(rutas, np.random.default_rng(seed + 1)),
     })
 
 
@@ -94,11 +135,14 @@ def cargar(nombre):
 def armar_stream(df):
     # ordena por tiempo y agrega los campos nuevos de W2: stream_seq, vehicle_id
     # y sec (segundos desde el inicio, para las ventanas)
-    g = np.random.default_rng(SEED + 1)
-    s = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
-    s["stream_seq"] = np.arange(1, len(s) + 1)
-    unidades = np.where(s["route_id"].str.startswith("L-"), 6, 10)
-    s["vehicle_id"] = s["route_id"] + "-V" + pd.Series(g.integers(1, unidades + 1)).astype(str).str.zfill(2)
+    # Cambio 6: si el CSV ya trae stream_seq y vehicle_id (generador v2), se usan tal cual.
+    if "stream_seq" in df and "vehicle_id" in df:
+        s = df.sort_values("stream_seq").reset_index(drop=True)
+    else:
+        g = np.random.default_rng(SEED + 1)
+        s = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
+        s["stream_seq"] = np.arange(1, len(s) + 1)
+        s["vehicle_id"] = _vehiculos(s["route_id"], g)
     s["sec"] = (s["timestamp"] - INICIO).dt.total_seconds().astype(int)
     return s
 
