@@ -465,8 +465,16 @@ def fig_panel_c_hourly(routes: pd.DataFrame, hourly: pd.DataFrame, capacity=None
 
     lead = top[0]
     peak_h = int(hourly.loc[lead].idxmax())
-    _title(fig, f"{lead} llega a {es(hourly.loc[lead].max(), 1)} taps por hora a las {peak_h}:00; "
-                f"las horas pico son 6–9 am y 5–7 pm", width=70)
+    # Integración (2026-10-23): la hora pico ya no es fija (el generador no la acuerda), así que
+    # el título la calcula desde los datos con el criterio del validador: pico claro si la hora
+    # más cargada del sistema tiene >= 1,5 veces los taps de una hora promedio.
+    system = hourly.sum(axis=0)
+    sys_h, ratio = int(system.idxmax()), float(system.max() / system.mean())
+    peak_txt = (f"la hora pico del sistema es las {sys_h}:00 ({es(ratio, 1)} veces una hora promedio)"
+                if ratio >= 1.5 else
+                f"no hay hora pico clara: la hora más cargada tiene solo {es(ratio, 2)} veces una hora promedio")
+    _title(fig, f"{lead} llega a {es(hourly.loc[lead].max(), 1)} taps por hora a las {peak_h}:00; {peak_txt}",
+           width=70)
     fig.tight_layout()
     return fig
 
