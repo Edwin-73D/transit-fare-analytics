@@ -9,11 +9,11 @@ como referencia el Metro de Medellín. Los datos son simulados con un generador 
 
 ## Equipo
 
-| Persona | Rol en el Workshop 1 |
-|---|---|
-| Edwin Martinez (A) | Task 1, Task 2a, Task 5, integración |
-| Felipe Corrales (B) | Generador de datos, Task 3 (hashing universal), README |
-| Pedro Duque (C) | Task 2b (QuickSort), dashboard (Paneles A, B y C) |
+| Persona | Workshop 1 | Workshop 2 |
+|---|---|---|
+| Edwin Martinez (A) | Task 1, Task 2a, Task 5, integración | Simulador del stream, Task 5 |
+| Felipe Corrales (B) | Generador, Task 3 (hashing universal), README | Generador v2, Task 1, Task 2 |
+| Pedro Duque (C) | Task 2b (QuickSort), dashboard | Task 3, dashboard |
 
 ## Instalación
 
@@ -52,6 +52,23 @@ python dashboard.py --export         # o guardar las gráficas como PNG en resul
 El Task 1 es una estimación teórica con cifras reales del Metro: está en
 [`src/task1_estimates.md`](src/task1_estimates.md).
 
+## Cómo correr el Workshop 2 (Data Streams)
+
+Todos los tasks del W2 leen los taps **uno a la vez** con `w2/stream.py`, en una sola pasada y
+con memoria limitada. Primero hay que generar los datos (paso 1 del W1).
+
+```bash
+python w2/stream.py --head 5       # ver qué entrega el stream
+python w2/w2_task1_queries.py      # Task 1: taps por ruta en 5 min + tarjetas distintas hoy, ~3 s
+python w2/w2_task2_bloom.py        # Task 2: Bloom filter de duplicados por viaje, ~15 s
+python w2/w2_task3_sampling.py     # Task 3: muestreo estable por hash, ~25 s
+python w2/w2_task5_moments.py      # Task 5: momentos de frecuencia F0, F1, F2
+streamlit run dashboard.py         # en la barra lateral elegir "W2 · Data streams"
+```
+
+El Task 4 (HyperLogLog) se eliminó por ser equipo de 3: el Panel B usa el estimador por
+muestreo del Task 3 y la gráfica "error vs memoria" se reemplaza por "error vs tasa de muestreo p".
+
 ## Qué produce cada script
 
 | Script | Task | Salida | Panel |
@@ -65,6 +82,10 @@ El Task 1 es una estimación teórica con cifras reales del Metro: está en
 | `src/task5_markov.py` | 5 | `results/task5_markov.json` | C (línea de capacidad) |
 | `src/panel_c_data.py` | 6 | `results/panel_c.json` | C |
 | `dashboard.py` | 6 | `results/capturas/*.png` | A, B, C |
+| `w2/w2_task1_queries.py` | W2 · 1 | `results/w2_task1.json` | — |
+| `w2/w2_task2_bloom.py` | W2 · 2 | `results/w2_panel_a.json` | W2 · A |
+| `w2/w2_task3_sampling.py` | W2 · 3 | `results/w2_panel_b.json` | W2 · B |
+| `w2/w2_task5_moments.py` | W2 · 5 | `results/w2_task5.json` | W2 · C |
 
 **Regla del equipo:** cada task escribe su propio JSON en `results/` y el dashboard solo lee
 esos archivos. Nadie depende del código de otro task.
@@ -83,10 +104,14 @@ esos archivos. Nadie depende del código de otro task.
 | station | estación o parada | Universidad |
 | fare_amount | pesos (COP); 0 si es transferencia | 3300.0 |
 | transfer_flag | booleano | False |
+| stream_seq | entero, orden del stream (W2) | 1 |
+| vehicle_id | ruta + "-V" + 2 dígitos (W2) | L-A-V03 |
 
 - La hora pico no es fija: los scripts la detectan desde los datos y reportan qué tan marcada es.
 - El % de transferencias lo sortea el generador por dataset (entre 5% y 40%); el primer tap de
   una tarjeta nunca es transferencia.
+- ~2% de los taps son duplicados (misma tarjeta y vehículo entre 2 y 30 s después), para
+  probar el Bloom filter del W2.
 - `data/` y `results/*.json` no se suben al repo: se regeneran con los comandos de arriba.
 
 ## Estructura
@@ -104,7 +129,10 @@ transit-fare-analytics/
 │   ├── task5_markov.py
 │   └── panel_c_data.py
 ├── results/              ← JSON de cada task y capturas del dashboard
-├── w2/                   ← Workshop 2 (data streams), en desarrollo
+├── w2/                   ← Workshop 2 (data streams)
+│   ├── stream.py         ← simulador del stream (un tap a la vez)
+│   ├── w2_task1_queries.py, w2_task2_bloom.py
+│   └── w2_task3_sampling.py, w2_task5_moments.py
 ├── w3/                   ← Workshop 3 (cadenas de Markov), en desarrollo
 ├── dashboard.py
 ├── requirements.txt
