@@ -31,8 +31,19 @@ Cambios (integración, 2026-10-23)
      n filas: se generan n - duplicados taps base y se agregan los duplicados;
    - se ordena por tiempo, se renumera tap_id y se agrega stream_seq = 1..n (orden del stream).
    Columnas nuevas al final: stream_seq, vehicle_id.
-Lo demás (semilla, tarjetas, rutas Zipf, tarifas en COP, timestamps, % de transferencias
-sorteado entre 5% y 40%) no cambió.
+7. VIAJES para el Workshop 3 (2026-10-23). Antes la ruta de cada tap era al azar: todas las
+   rutas transbordaban a todas (600/600 pares) y la cadena de Markov tenía una sola clase.
+   Ahora cada tarjeta hace viajes de 1, 2 o 3 tramos (60/30/10%), con 3–25 min entre tramos:
+   - primer tramo: ruta Zipf entre las 25;
+   - tramos siguientes: ruta Zipf entre las demás, SIN las 3 ALIMENTADORAS. Nadie transborda
+     hacia una alimentadora, así que en el W3 quedan como estados transitorios;
+   - entre dos viajes de la misma tarjeta hay más de 90 min, para que el W3 (transbordo = taps
+     a <= 90 min) nunca confunda dos viajes con un transbordo;
+   - los tramos 2 y 3 son transferencia (tarifa 0) con probabilidad q ~ U(0,15; 1) sorteada por
+     dataset; como 1/3 de los taps son tramos 2 o 3, el % total queda entre 5% y 33%. El primer
+     tramo nunca es transferencia (cumple el cambio 1 sin código aparte).
+   Los timestamps siguen repartidos parejo en la semana (sin hora pico).
+Lo demás (semilla, tarjetas, rutas Zipf, tarifas en COP) no cambió.
 """
 import os
 import shutil
@@ -63,6 +74,17 @@ PESOS = PESOS / PESOS.sum()
 DUPLICADOS = 0.02                                   # Cambio 6: fracción de taps duplicados
 DUP_SEGUNDOS = (2, 30)                              # el duplicado llega entre 2 y 30 s después
 
+# Cambio 7: viajes
+ALIMENTADORAS = ["B-103", "B-107", "B-111"]         # popularidad media; solo pueden ser 1.er tramo
+TRAMOS = ([1, 2, 3], [0.6, 0.3, 0.1])               # tramos por viaje y su probabilidad
+ENTRE_TRAMOS = (3 * 60, 25 * 60)                    # segundos entre dos tramos de un viaje
+DURACION_MAX = 2 * ENTRE_TRAMOS[1]                  # un viaje de 3 tramos dura a lo sumo 50 min
+TRANSBORDO_MAX = 90 * 60                            # regla del W3: transbordo = taps a <= 90 min
+# separación mínima entre los INICIOS de dos viajes de una tarjeta: el viaje anterior termina y
+# deja más de 90 min (+ 1 min de margen, por los duplicados que llegan hasta 30 s después)
+ENTRE_VIAJES = DURACION_MAX + TRANSBORDO_MAX + 60
+PERMITIDA_DESPUES = np.array([r not in ALIMENTADORAS for r in RUTAS], dtype=float)  # 0 = alimentadora
+
 
 def generar(n, seed=SEED):
     # Cambio 6: se generan n - n_dup taps base y después se agregan n_dup duplicados.
@@ -91,23 +113,59 @@ def _agregar_duplicados(base, n_dup, seed):
     return s
 
 
+def _inicios_de_viajes(k, g):
+    # Cambio 7: k inicios al azar en la semana con al menos ENTRE_VIAJES entre uno y otro.
+    # Truco: se sortean k puntos en una semana "encogida" en (k-1)·ENTRE_VIAJES, se ordenan y
+    # al i-ésimo se le suma i·ENTRE_VIAJES. Quedan parejos en la semana y bien separados.
+    libre = DIAS * 86400 - DURACION_MAX - (k - 1) * ENTRE_VIAJES
+    assert libre > 0, "demasiados viajes para una tarjeta"
+    return np.sort(g.integers(0, libre, k)) + np.arange(k) * ENTRE_VIAJES
+
+
+def _siguiente_ruta(actual, g):
+    # Cambio 7: ruta del tramo siguiente, Zipf entre las rutas distintas de la actual y que
+    # no son alimentadoras (nadie transborda HACIA una alimentadora).
+    p = PESOS * PERMITIDA_DESPUES
+    p[actual] = 0
+    return g.choice(len(RUTAS), p=p / p.sum())
+
+
 def _generar_base(n, seed=SEED):
+    # Cambio 7: n taps agrupados en viajes (antes: n taps con ruta y tarjeta al azar).
     g = np.random.default_rng(seed)
 
-    # las 3000 tarjetas salen al menos una vez, el resto al azar
-    tarjetas = np.concatenate([np.arange(1, N_TARJETAS + 1), g.integers(1, N_TARJETAS + 1, n - N_TARJETAS)])
-    g.shuffle(tarjetas)
+    # tramos de cada viaje hasta juntar n taps (el último viaje se recorta para que sean n justos)
+    tramos = g.choice(TRAMOS[0], n, p=TRAMOS[1])
+    n_viajes = int(np.searchsorted(np.cumsum(tramos), n)) + 1
+    tramos = tramos[:n_viajes]
+    tramos[-1] -= tramos.sum() - n
 
-    segundos = np.sort(g.integers(0, DIAS * 86400, n))
-    ruta = g.choice(len(RUTAS), n, p=PESOS)
+    # tarjeta de cada viaje: las 3000 tarjetas salen al menos una vez, el resto al azar
+    tarjeta = np.concatenate([np.arange(1, N_TARJETAS + 1),
+                              g.integers(1, N_TARJETAS + 1, n_viajes - N_TARJETAS)])
+    g.shuffle(tarjeta)
+
+    # inicio de cada viaje: los de una misma tarjeta separados por más de 90 min + duración
+    inicio = np.empty(n_viajes, dtype=np.int64)
+    orden = np.argsort(tarjeta, kind="stable")
+    cortes = np.flatnonzero(np.diff(tarjeta[orden])) + 1
+    for viajes in np.split(orden, cortes):
+        inicio[viajes] = _inicios_de_viajes(len(viajes), g)
+
+    q = g.uniform(0.15, 1.0)        # prob. de que un tramo 2 o 3 sea transferencia (por dataset)
+    filas = []
+    for v in range(n_viajes):
+        seg, ruta = int(inicio[v]), g.choice(len(RUTAS), p=PESOS)
+        for t in range(tramos[v]):
+            if t > 0:
+                seg += int(g.integers(ENTRE_TRAMOS[0], ENTRE_TRAMOS[1] + 1))
+                ruta = _siguiente_ruta(ruta, g)
+            filas.append((seg, tarjeta[v], ruta, t > 0 and g.random() < q))
+    segundos, tarjetas, ruta, transfer = (np.array(c) for c in zip(*filas))
+
+    o = np.argsort(segundos, kind="stable")          # orden de tiempo
+    segundos, tarjetas, ruta, transfer = segundos[o], tarjetas[o], ruta[o], transfer[o].astype(bool)
     estacion = g.choice(ESTACIONES, n)
-    transfer = g.random(n) < g.uniform(0.05, 0.40)      # % de transferencias entre 5% y 40%
-
-    # Cambio 1: el primer tap de cada tarjeta no puede ser transferencia. Los taps ya están
-    # en orden de tiempo (segundos ordenados), así que el primero de cada tarjeta es la
-    # primera vez que aparece en el arreglo.
-    primer_tap = ~pd.Series(tarjetas).duplicated().to_numpy()
-    transfer &= ~primer_tap
 
     rutas = [RUTAS[r] for r in ruta]
     return pd.DataFrame({
