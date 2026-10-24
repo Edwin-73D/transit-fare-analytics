@@ -9,11 +9,11 @@ como referencia el Metro de Medellín. Los datos son simulados con un generador 
 
 ## Equipo
 
-| Persona | Workshop 1 | Workshop 2 |
-|---|---|---|
-| Edwin Martinez (A) | Task 1, Task 2a, Task 5, integración | Simulador del stream, Task 5 |
-| Felipe Corrales (B) | Generador, Task 3 (hashing universal), README | Generador v2, Task 1, Task 2 |
-| Pedro Duque (C) | Task 2b (QuickSort), dashboard | Task 3, dashboard |
+| Persona | Workshop 1 | Workshop 2 | Workshop 3 |
+|---|---|---|---|
+| Edwin Martinez (A) | Task 1, Task 2a, Task 5, integración | Simulador del stream, Task 5 | Task 3 (PageRank), Task 5 (2-SAT), matriz de juguete |
+| Felipe Corrales (B) | Generador, Task 3 (hashing universal), README | Generador v2, Task 1, Task 2 | Aristas de transbordo, Task 1 (DTMC) |
+| Pedro Duque (C) | Task 2b (QuickSort), dashboard | Task 3, dashboard | Task 2 (π), Panel D |
 
 ## Instalación
 
@@ -69,6 +69,26 @@ streamlit run dashboard.py         # en la barra lateral elegir "W2 · Data stre
 El Task 4 (HyperLogLog) se eliminó por ser equipo de 3: el Panel B usa el estimador por
 muestreo del Task 3 y la gráfica "error vs memoria" se reemplaza por "error vs tasa de muestreo p".
 
+## Cómo correr el Workshop 3 (Cadenas de Markov)
+
+Los taps se convierten en una red de transbordos entre rutas y esa red en una cadena de Markov
+cuyos estados son las rutas. Correr en este orden (después del paso 1 del W1):
+
+```bash
+python w3/build_edges.py           # aristas de transbordo (taps seguidos de una tarjeta, rutas distintas, <= 90 min)
+python w3/w3_task1_dtmc.py         # Task 1: matriz M, clases comunicantes, recurrentes/transitorias, periodo
+python w3/w3_task2_stationary.py   # Task 2: distribución estacionaria π (sistema lineal + potencias)
+python w3/w3_task3_pagerank.py     # Task 3: PageRank (d = 0,85) vs ranking por pasajeros
+python w3/w3_task5_2sat.py         # Task 5: 2-SAT aleatorizado de Papadimitriou, ~10 s
+streamlit run dashboard.py         # en la barra lateral elegir "W3 · Cadenas de Markov"
+```
+
+`python w3/w3_task1_dtmc.py --toy` y `python w3/w3_task2_stationary.py --toy` corren sobre la
+matriz de juguete de `w3/toy_matrix.py` (5 rutas, con una ruta sin salida), que muestra los
+casos que los datos reales no tienen: un estado absorbente y una π que no es única.
+
+El Task 4 (caminata aleatoria no dirigida) se eliminó por ser equipo de 3; ningún panel lo usa.
+
 ## Qué produce cada script
 
 | Script | Task | Salida | Panel |
@@ -81,11 +101,16 @@ muestreo del Task 3 y la gráfica "error vs memoria" se reemplaza por "error vs 
 | `src/task3_hashing.py` | 3 | `results/panel_a.json` | A |
 | `src/task5_markov.py` | 5 | `results/task5_markov.json` | C (línea de capacidad) |
 | `src/panel_c_data.py` | 6 | `results/panel_c.json` | C |
-| `dashboard.py` | 6 | `results/capturas/*.png` | A, B, C |
+| `dashboard.py` | 6 | `results/capturas/*.png` | A, B, C, W2, W3 |
 | `w2/w2_task1_queries.py` | W2 · 1 | `results/w2_task1.json` | — |
 | `w2/w2_task2_bloom.py` | W2 · 2 | `results/w2_panel_a.json` | W2 · A |
 | `w2/w2_task3_sampling.py` | W2 · 3 | `results/w2_panel_b.json` | W2 · B |
 | `w2/w2_task5_moments.py` | W2 · 5 | `results/w2_task5.json` | W2 · C |
+| `w3/build_edges.py` | W3 · aristas | `results/w3_edges.json` | — |
+| `w3/w3_task1_dtmc.py` | W3 · 1 | `results/w3_matrix.json` | — |
+| `w3/w3_task2_stationary.py` | W3 · 2 | `results/w3_task2.json` | W3 · D (π) |
+| `w3/w3_task3_pagerank.py` | W3 · 3 | `results/w3_task3_pagerank.json` | W3 · D |
+| `w3/w3_task5_2sat.py` | W3 · 5 | `results/w3_task5_2sat.json` | — |
 
 **Regla del equipo:** cada task escribe su propio JSON en `results/` y el dashboard solo lee
 esos archivos. Nadie depende del código de otro task.
@@ -108,8 +133,12 @@ esos archivos. Nadie depende del código de otro task.
 | vehicle_id | ruta + "-V" + 2 dígitos (W2) | L-A-V03 |
 
 - La hora pico no es fija: los scripts la detectan desde los datos y reportan qué tan marcada es.
-- El % de transferencias lo sortea el generador por dataset (entre 5% y 40%); el primer tap de
-  una tarjeta nunca es transferencia.
+- Los taps salen de **viajes** de 1, 2 o 3 tramos (3–25 min entre tramos). Las rutas `B-103`,
+  `B-107` y `B-111` son **alimentadoras**: solo pueden ser el primer tramo, nadie transborda
+  hacia ellas (en el W3 quedan como estados transitorios). Entre dos viajes de una misma
+  tarjeta pasan más de 90 min.
+- El % de transferencias lo sortea el generador por dataset (entre 5% y 33%); el primer tramo
+  de un viaje nunca es transferencia.
 - ~2% de los taps son duplicados (misma tarjeta y vehículo entre 2 y 30 s después), para
   probar el Bloom filter del W2.
 - `data/` y `results/*.json` no se suben al repo: se regeneran con los comandos de arriba.
@@ -133,7 +162,11 @@ transit-fare-analytics/
 │   ├── stream.py         ← simulador del stream (un tap a la vez)
 │   ├── w2_task1_queries.py, w2_task2_bloom.py
 │   └── w2_task3_sampling.py, w2_task5_moments.py
-├── w3/                   ← Workshop 3 (cadenas de Markov), en desarrollo
+├── w3/                   ← Workshop 3 (cadenas de Markov)
+│   ├── build_edges.py    ← aristas de transbordo
+│   ├── w3_task1_dtmc.py, w3_task2_stationary.py
+│   ├── w3_task3_pagerank.py, w3_task5_2sat.py
+│   └── toy_matrix.py     ← matriz de juguete de 5 rutas (pruebas)
 ├── dashboard.py
 ├── requirements.txt
 └── README.md
