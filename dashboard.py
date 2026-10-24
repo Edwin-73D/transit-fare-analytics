@@ -12,6 +12,9 @@ módulo escribe su JSON y aquí nadie toca el CSV ni importa código de los otro
   Panel C  results/panel_c.json    (src/panel_c_data.py, compañero 2)
            Pasajeros por ruta en el periodo simulado, con las más concurridas resaltadas.
            Opcional: results/task5_markov.json (Task 5) para dibujar la línea de capacidad.
+  W2       Paneles A, B y C del Workshop 2 (results/w2_*.json), con el selector de la barra lateral.
+  W3       Panel D: results/w3_task3_pagerank.json (+ results/w3_task2.json para π).
+           PageRank vs fracción de pasajeros por ruta.
 
 Cómo correrlo
 -------------
@@ -604,6 +607,62 @@ W2_PANELS = [
 ]
 
 
+# --------------------------------------------------------------------------- #
+# Workshop 3 - Cadenas de Markov (integración, 2026-10-23)
+# Panel D <- results/w3_task3_pagerank.json (w3/w3_task3_pagerank.py)
+#            + results/w3_task2.json opcional (π del Task 2) para una tercera barra.
+# Gris = pasajeros (la referencia), azul = PageRank, verde = π.
+# --------------------------------------------------------------------------- #
+def table_w3_panel_d(pr: dict, task2: dict | None = None) -> pd.DataFrame:
+    """Una fila por ruta, ordenadas por pasajeros: fracciones, rankings y cuánto sube o baja."""
+    total = sum(pr["ridership"].values())
+    df = pd.DataFrame({"ruta": list(pr["pagerank"]),
+                       "pasajeros": [pr["ridership"][r] for r in pr["pagerank"]],
+                       "pagerank": list(pr["pagerank"].values())})
+    df["fracción de pasajeros"] = df["pasajeros"] / total
+    if task2:
+        df["π"] = [task2["pi"].get(r, np.nan) for r in df["ruta"]]
+    df["rank pasajeros"] = df["ruta"].map({r: i for i, r in enumerate(pr["rank_ridership"], 1)})
+    df["rank PageRank"] = df["ruta"].map({r: i for i, r in enumerate(pr["rank_pagerank"], 1)})
+    df["cambio"] = df["rank pasajeros"] - df["rank PageRank"]        # + sube, − baja
+    return df.sort_values("rank pasajeros").reset_index(drop=True)
+
+
+@themed
+def fig_w3_panel_d(pr: dict, task2: dict | None = None):
+    """Barras por ruta (ordenadas por pasajeros): fracción de pasajeros vs PageRank (y π)."""
+    df = table_w3_panel_d(pr, task2)
+    transient = set((task2 or {}).get("transient", []))
+    series = [("fracción de pasajeros", NEUTRAL, "Pasajeros (fracción de taps)"),
+              ("pagerank", BLUE, f"PageRank (d = {pr['d']})")]
+    if "π" in df:
+        series.append(("π", TOP5[2], "π estacionaria (Task 2)"))
+    fig, ax = plt.subplots(figsize=(12, 4.8))
+    x = np.arange(len(df))
+    w = 0.8 / len(series)
+    for i, (col, color, label) in enumerate(series):
+        ax.bar(x + (i - (len(series) - 1) / 2) * w, df[col] * 100, w, color=color, edgecolor=SURFACE, label=label)
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["ruta"], rotation=60, fontsize=8.5)
+    for tick, r in zip(ax.get_xticklabels(), df["ruta"]):
+        if r in transient:                       # alimentadoras transitorias resaltadas
+            tick.set_color(ORANGE)
+            tick.set_fontweight("bold")
+    ax.set_ylabel("% del total")
+    ax.set_xlabel("Rutas ordenadas por pasajeros" + (" · en naranja: transitorias (nadie transborda hacia ellas)"
+                                                     if transient else ""))
+    ax.legend(loc="upper right")
+
+    down = df.loc[df["cambio"].idxmin()]
+    up = df.loc[df["cambio"].idxmax()]
+    _title(fig, f"PageRank ordena las rutas casi como los pasajeros (Spearman {es(pr['spearman_vs_ridership'], 2)}), "
+                f"salvo las alimentadoras: {down['ruta']} baja del #{down['rank pasajeros']} al "
+                f"#{down['rank PageRank']} porque ningún transbordo llega a ella; {up['ruta']} sube del "
+                f"#{up['rank pasajeros']} al #{up['rank PageRank']} por los transbordos que recibe", width=120)
+    fig.tight_layout()
+    return fig
+
+
 def export_all(outdir: Path = CAPTURAS) -> list[Path]:
     outdir.mkdir(parents=True, exist_ok=True)
     written, skipped = [], []
@@ -644,6 +703,13 @@ def export_all(outdir: Path = CAPTURAS) -> list[Path]:
             skipped.append(f"{name} (lo genera {producer})")
         else:
             save(fig_fn(data), png)
+
+    # Workshop 3
+    data = load_json("w3_task3_pagerank.json")
+    if data is None:
+        skipped.append(f"w3_task3_pagerank.json (lo genera {PRODUCERS_W3['w3_task3_pagerank.json']})")
+    else:
+        save(fig_w3_panel_d(data, load_json("w3_task2.json")), "w3_panel_d_pagerank.png")
 
     for p in written:
         print(f"guardado: {p}")
@@ -828,6 +894,34 @@ def run_streamlit_w2(st):
             lambda d: pd.DataFrame(d["top_routes"]))
 
 
+PRODUCERS_W3 = {
+    "w3_task3_pagerank.json": "python w3/w3_task3_pagerank.py",
+    "w3_task2.json": "python w3/w3_task2_stationary.py",
+}
+
+
+def run_streamlit_w3(st):
+    st.subheader("Panel D · PageRank vs pasajeros por ruta")
+    st.caption("PageRank mide la importancia de una ruta en la red de transbordos (le llegan transbordos de rutas "
+               "importantes); los pasajeros cuentan taps. π = distribución estacionaria de la cadena (Task 2).")
+    try:
+        pr, task2 = load_json("w3_task3_pagerank.json"), load_json("w3_task2.json")
+    except DataError as e:
+        st.error(str(e))
+        return
+    if pr is None:
+        st.info(f"Falta `results/w3_task3_pagerank.json`. Se genera con `{PRODUCERS_W3['w3_task3_pagerank.json']}`.")
+        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Rutas (estados)", len(pr["pagerank"]))
+    c2.metric("Spearman PageRank vs pasajeros", es(pr["spearman_vs_ridership"], 2))
+    c3.metric("Iteraciones (tol 1e-10)", pr["iterations"])
+    c4.metric("Rutas transitorias", len(task2["transient"]) if task2 else "—")
+    _show(st, fig_w3_panel_d(pr, task2))
+    with st.expander("Ver datos en tabla"):
+        st.dataframe(table_w3_panel_d(pr, task2), hide_index=True)
+
+
 def run_streamlit():
     import streamlit as st
 
@@ -837,9 +931,10 @@ def run_streamlit():
 
     with st.sidebar:
         # Integración (2026-10-23): selector de workshop; el W1 no cambia.
-        workshop = st.radio("Workshop", ["W1 · Algoritmos aleatorizados", "W2 · Data streams"])
+        workshop = st.radio("Workshop", ["W1 · Algoritmos aleatorizados", "W2 · Data streams",
+                                         "W3 · Cadenas de Markov"])
         st.header("Resultados cargados")
-        producers = PRODUCERS if workshop.startswith("W1") else PRODUCERS_W2
+        producers = {"W1": PRODUCERS, "W2": PRODUCERS_W2, "W3": PRODUCERS_W3}[workshop[:2]]
         for name, cmd in producers.items():
             ok = (RESULTS / name).exists()
             st.markdown(f"{'✅' if ok else '⚠️'} `{name}`" + ("" if ok else f" · falta: `{cmd}`"))
@@ -847,6 +942,9 @@ def run_streamlit():
 
     if workshop.startswith("W2"):
         run_streamlit_w2(st)
+        return
+    if workshop.startswith("W3"):
+        run_streamlit_w3(st)
         return
 
     tab_a, tab_b, tab_c = st.tabs(["Panel A · Carga por bucket", "Panel B · Aleatorizado vs determinista",
