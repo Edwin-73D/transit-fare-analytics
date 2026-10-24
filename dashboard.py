@@ -482,6 +482,128 @@ def fig_panel_c_hourly(routes: pd.DataFrame, hourly: pd.DataFrame, capacity=None
 # --------------------------------------------------------------------------- #
 # Exportar capturas (PNG) sin necesidad de Streamlit
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Workshop 2 - Data Streams (integración, 2026-10-23)
+# Mismo estilo que el W1: azul = técnica de streaming/aleatorizada, naranja = teoría o línea base.
+# W2 Panel A <- results/w2_panel_a.json (w2/w2_task2_bloom.py)
+# W2 Panel B <- results/w2_panel_b.json (w2/w2_task3_sampling.py)
+# W2 Panel C <- results/w2_task5.json   (w2/w2_task5_moments.py)
+# --------------------------------------------------------------------------- #
+P_COLORS = {"0.05": TOP5[2], "0.10": TOP5[0], "0.20": TOP5[3]}
+
+
+@themed
+def fig_w2_panel_a(data: dict):
+    """FPR del Bloom filter a lo largo del stream + FPR empírico vs teórico para cada m."""
+    runs = pd.DataFrame(data["runs"])
+    series = pd.DataFrame(data["series"])
+    bits = int(data.get("meta", {}).get("series_bits_per_element", runs["bits_per_element"].iloc[1]))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4), gridspec_kw={"width_ratios": [1.2, 1]})
+
+    ax1.plot(series["stream_seq"], series["fpr_so_far"] * 100, color=BLUE, linewidth=2)
+    ax1.set_xlabel("stream_seq (taps procesados)")
+    ax1.set_ylabel("Falsos positivos hasta el momento (%)")
+    ax1.set_title(f"En el stream ({bits} bits por tarjeta)", loc="left")
+    ax1.xaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v)))
+
+    x = np.arange(len(runs))
+    w = 0.38
+    ax2.bar(x - w / 2, runs["fpr_empirical"] * 100, w, color=BLUE, edgecolor=SURFACE, label="Medido (filtro lleno)")
+    ax2.bar(x + w / 2, runs["fpr_theoretical"] * 100, w, color=ORANGE, edgecolor=SURFACE, label="Teoría (1 − e^(−kn/m))^k")
+    ax2.set_yscale("log")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([f"{b} bits\nm={m}, k={k}" for b, m, k in zip(runs["bits_per_element"], runs["m"], runs["k"])],
+                        fontsize=8.5)
+    ax2.set_ylabel("Tasa de falsos positivos (%)")
+    ax2.set_title(f"Con el filtro lleno (n = {runs['n'].iloc[0]} tarjetas por viaje)", loc="left")
+    ax2.yaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v, 2 if v < 1 else 0)))
+    ax2.legend(loc="upper right")
+
+    row = runs[runs["bits_per_element"] == bits].iloc[0]
+    _title(fig, f"Con {bits} bits por tarjeta el Bloom filter se equivoca el {es(row['fpr_empirical'] * 100, 1)}% "
+                f"de las veces (teoría {es(row['fpr_theoretical'] * 100, 1)}%) y detectó "
+                f"{es(data['duplicates_detected'])} de {es(data['duplicates_injected'])} taps duplicados")
+    fig.tight_layout()
+    return fig
+
+
+@themed
+def fig_w2_panel_b(data: dict):
+    """Tarjetas distintas estimadas con muestras de 5/10/20% vs reales + error relativo vs p."""
+    s = pd.DataFrame(data["distinct_series"])
+    err = data["error_vs_p"]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4), gridspec_kw={"width_ratios": [1.3, 1]})
+
+    ax1.plot(s["stream_seq"], s["true"], color=INK, linewidth=2.2, label="Real (conteo exacto)")
+    for p, col in (("0.05", "est_p05"), ("0.10", "est_p10"), ("0.20", "est_p20")):
+        ax1.plot(s["stream_seq"], s[col], color=P_COLORS[p], linewidth=1.3, label=f"Estimada con p = {int(float(p) * 100)}%")
+    ax1.set_xlabel("stream_seq (taps procesados)")
+    ax1.set_ylabel("Tarjetas distintas")
+    ax1.xaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v)))
+    ax1.yaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v)))
+    ax1.legend(loc="lower right")
+    ax1.set_title("A lo largo del stream (una función hash)", loc="left")
+
+    ps = list(err)
+    x = np.arange(len(ps))
+    w = 0.38
+    ax2.bar(x - w / 2, [err[p]["rmse_rel"] * 100 for p in ps], w, color=BLUE, edgecolor=SURFACE, label="Medido (RMSE)")
+    ax2.bar(x + w / 2, [err[p]["theory_rel_error"] * 100 for p in ps], w, color=ORANGE, edgecolor=SURFACE,
+            label="Teoría √((1−p)/(pD))")
+    ax2.plot(x, [err[p]["median_abs_rel_error"] * 100 for p in ps], "o", color=INK, label="Mediana")
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([f"p = {int(float(p) * 100)}%\n~{es(err[p]['memory_cards_mean'])} tarjetas" for p in ps], fontsize=8.5)
+    ax2.set_ylabel("Error relativo (%)")
+    ax2.set_title("Error vs tasa de muestreo p", loc="left")
+    ax2.legend(loc="upper right")
+
+    lo, hi = err[ps[0]], err[ps[-1]]
+    _title(fig, f"Guardando solo el {int(float(ps[0]) * 100)}% de las tarjetas el error típico es "
+                f"{es(lo['rmse_rel'] * 100, 1)}%; con el {int(float(ps[-1]) * 100)}% baja a "
+                f"{es(hi['rmse_rel'] * 100, 1)}% (teoría {es(lo['theory_rel_error'] * 100, 1)}% y "
+                f"{es(hi['theory_rel_error'] * 100, 1)}%)")
+    fig.tight_layout()
+    return fig
+
+
+@themed
+def fig_w2_panel_c(data: dict, top_k: int = 5):
+    """Pasajeros por ruta al final del stream + rutas efectivas F1²/F2 a lo largo del stream."""
+    routes = pd.DataFrame(data["top_routes"])
+    series = pd.DataFrame(data["series"])
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4), gridspec_kw={"width_ratios": [1.4, 1]})
+
+    colors = [TOP5[i] if i < top_k else NEUTRAL for i in range(len(routes))]
+    ax1.bar(routes["route_id"], routes["count"], color=colors, edgecolor=SURFACE)
+    ax1.set_ylabel("Pasajeros (taps)")
+    ax1.yaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v)))
+    ax1.tick_params(axis="x", rotation=60, labelsize=8)
+    ax1.set_title("Pasajeros por ruta", loc="left")
+
+    ax2.plot(series["stream_seq"], series["effective_routes"], color=BLUE, linewidth=2, label="Rutas efectivas F1²/F2")
+    ax2.axhline(data["F0"], color=ORANGE, linestyle=(0, (5, 3)), linewidth=1.2, label=f"Rutas que existen (F0 = {data['F0']})")
+    ax2.set_ylim(0, data["F0"] * 1.15)
+    ax2.set_xlabel("stream_seq (taps procesados)")
+    ax2.xaxis.set_major_formatter(FuncFormatter(lambda v, _: es(v)))
+    ax2.set_title("Concentración a lo largo del stream", loc="left")
+    ax2.legend(loc="center right")
+
+    top_share = sum(r["share_of_F1"] for r in data["top_routes"][:top_k]) * 100
+    _title(fig, f"Pocas rutas cargan casi todo: las {top_k} más usadas tienen el {es(top_share, 0)}% de los "
+                f"pasajeros y el reparto equivale a {es(data['effective_routes'], 1)} de {data['F0']} rutas "
+                f"(F2 = {es(data['F2_over_uniform'], 1)} veces el de un reparto parejo)")
+    fig.tight_layout()
+    return fig
+
+
+# (JSON, figura, PNG de --export, script que lo genera)
+W2_PANELS = [
+    ("w2_panel_a.json", fig_w2_panel_a, "w2_panel_a_bloom_fpr.png", "python w2/w2_task2_bloom.py"),
+    ("w2_panel_b.json", fig_w2_panel_b, "w2_panel_b_tarjetas_distintas.png", "python w2/w2_task3_sampling.py"),
+    ("w2_task5.json", fig_w2_panel_c, "w2_panel_c_pasajeros_fk.png", "python w2/w2_task5_moments.py"),
+]
+
+
 def export_all(outdir: Path = CAPTURAS) -> list[Path]:
     outdir.mkdir(parents=True, exist_ok=True)
     written, skipped = [], []
@@ -514,6 +636,14 @@ def export_all(outdir: Path = CAPTURAS) -> list[Path]:
         save(fig_panel_c_total(routes), "panel_c_pasajeros_por_ruta.png")
         save(fig_panel_c_hourly(routes, hourly, parse_capacity(load_task5(), routes["route_id"].iloc[0])),
              "panel_c_taps_por_hora.png")
+
+    # Workshop 2
+    for name, fig_fn, png, producer in W2_PANELS:
+        data = load_json(name)
+        if data is None:
+            skipped.append(f"{name} (lo genera {producer})")
+        else:
+            save(fig_fn(data), png)
 
     for p in written:
         print(f"guardado: {p}")
@@ -641,6 +771,63 @@ def _panel_c(st):
                      hide_index=True)
 
 
+PRODUCERS_W2 = {name: producer for name, _, _, producer in W2_PANELS}
+
+
+def _w2_panel(st, name: str, title: str, caption: str, fig_fn, metrics, table):
+    """Un panel del W2: título, métricas, figura y tabla (todo sale del JSON del task)."""
+    st.subheader(title)
+    st.caption(caption)
+    try:
+        data = load_json(name)
+    except DataError as e:
+        st.error(str(e))
+        return
+    if data is None:
+        st.info(f"Falta `results/{name}`. Se genera con `{PRODUCERS_W2[name]}`.")
+        return
+    cols = st.columns(len(metrics(data)))
+    for col, (label, value) in zip(cols, metrics(data)):
+        col.metric(label, value)
+    _show(st, fig_fn(data))
+    with st.expander("Ver datos en tabla"):
+        st.dataframe(table(data), hide_index=True)
+
+
+def run_streamlit_w2(st):
+    tab_a, tab_b, tab_c = st.tabs(["Panel A · Bloom filter", "Panel B · Tarjetas distintas",
+                                   "Panel C · Pasajeros por ruta y F_k"])
+    with tab_a:
+        _w2_panel(
+            st, "w2_panel_a.json", "Panel A · Falsos positivos del Bloom filter",
+            "Un filtro por vehículo y viaje de 30 min marca las tarjetas que ya hicieron tap. Nunca deja pasar "
+            "un duplicado; a veces marca una tarjeta nueva (falso positivo).",
+            fig_w2_panel_a,
+            lambda d: [("Duplicados inyectados", es(d["duplicates_injected"])),
+                       ("Detectados", es(d["duplicates_detected"])),
+                       ("Cruzan el borde del viaje", es(d.get("duplicates_window_boundary", 0)))],
+            lambda d: pd.DataFrame(d["runs"]))
+    with tab_b:
+        _w2_panel(
+            st, "w2_panel_b.json", "Panel B · Tarjetas distintas: estimadas vs reales",
+            "Muestreo estable por hash: una tarjeta entra si h(card_id) mod 100 < 100·p. "
+            "Estimación = distintas en la muestra / p.",
+            fig_w2_panel_b,
+            lambda d: [("Tarjetas reales", es(d["true_distinct"])),
+                       ("Transferencias reales", f"{es(d['transfer_frac']['true'] * 100, 1)}%"),
+                       ("Transferencias estimadas (p = 10%)", f"{es(d['transfer_frac']['by_p']['0.10'] * 100, 1)}%")],
+            lambda d: pd.DataFrame(d["error_vs_p"]).T.reset_index(names="p"))
+    with tab_c:
+        _w2_panel(
+            st, "w2_task5.json", "Panel C · Pasajeros por ruta y momentos de frecuencia",
+            "F0 = rutas distintas, F1 = taps, F2 = suma de cuadrados (concentración). "
+            "Rutas efectivas = F1²/F2.",
+            fig_w2_panel_c,
+            lambda d: [("F0", es(d["F0"])), ("F1", es(d["F1"])), ("F2", es(d["F2"])),
+                       ("Rutas efectivas", es(d["effective_routes"], 1))],
+            lambda d: pd.DataFrame(d["top_routes"]))
+
+
 def run_streamlit():
     import streamlit as st
 
@@ -649,11 +836,18 @@ def run_streamlit():
     st.caption("Grupo 8 · Public Transit Smart Card · el dashboard solo lee results/*.json")
 
     with st.sidebar:
+        # Integración (2026-10-23): selector de workshop; el W1 no cambia.
+        workshop = st.radio("Workshop", ["W1 · Algoritmos aleatorizados", "W2 · Data streams"])
         st.header("Resultados cargados")
-        for name, cmd in PRODUCERS.items():
+        producers = PRODUCERS if workshop.startswith("W1") else PRODUCERS_W2
+        for name, cmd in producers.items():
             ok = (RESULTS / name).exists()
             st.markdown(f"{'✅' if ok else '⚠️'} `{name}`" + ("" if ok else f" · falta: `{cmd}`"))
         st.caption(f"Carpeta: {RESULTS}")
+
+    if workshop.startswith("W2"):
+        run_streamlit_w2(st)
+        return
 
     tab_a, tab_b, tab_c = st.tabs(["Panel A · Carga por bucket", "Panel B · Aleatorizado vs determinista",
                                    "Panel C · Pasajeros por ruta"])
