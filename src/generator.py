@@ -19,10 +19,14 @@ Cambios (integración, 2026-10-23)
 4. Corrido como script, regenera los CSV aunque ya existan (antes solo si faltaban), para
    que nunca se use un CSV viejo de otra versión del generador. cargar() sigue igual:
    genera el CSV solo si no existe.
+5. Corrido como script escribe también data/taps.csv = la versión de 100k, que es el dataset
+   OFICIAL del proyecto (decisión del equipo, 2026-10-23). Todos los scripts buscan primero
+   data/taps.csv, así que todos usan los mismos datos.
 Lo demás (semilla, tarjetas, rutas Zipf, tarifas en COP, timestamps, % de transferencias
 sorteado entre 5% y 40%) no cambió.
 """
 import os
+import shutil
 import numpy as np
 import pandas as pd
 
@@ -105,3 +109,6 @@ if __name__ == "__main__":
     for nombre, n in (("10k", 10_000), ("100k", 100_000)):
         generar(n).to_csv(os.path.join(DATA, "taps_%s.csv" % nombre), index=False)
         print("listo data/taps_%s.csv" % nombre)
+    # Cambio 5: el dataset oficial (100k) también como data/taps.csv.
+    shutil.copyfile(os.path.join(DATA, "taps_100k.csv"), os.path.join(DATA, "taps.csv"))
+    print("listo data/taps.csv (= taps_100k.csv, dataset oficial)")
