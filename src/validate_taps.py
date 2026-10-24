@@ -17,33 +17,38 @@ Qué revisa
     - fare_amount numérico y >= 0.
     - transfer_flag booleano, y consistente: transferencia <=> fare_amount == 0.0.
   WARN (cumple el esquema pero se aleja de los valores objetivo):
-    - ~3.000 tarjetas distintas, 20-30 rutas, ~20% de transferencias.
-    - Que exista una hora pico clara.
-  INFO: periodo simulado, popularidad de rutas (Zipf), distribución por hora.
+    - ~3.000 tarjetas distintas, 20-30 rutas, transferencias entre 5% y 40%.
+  INFO: periodo simulado, popularidad de rutas (Zipf), hora pico detectada y su fuerza,
+        distribución por hora.
 
 Hora pico: NO se asume
 ----------------------
-El generador elige la hora pico al azar, así que no buscamos 7-8 am: la DETECTAMOS.
-Se cuentan los taps por hora del día (0-23) y la hora pico es la de más taps.
-Para decir si el pico es "claro" lo comparamos con una distribución uniforme: si los
-taps se repartieran parejo, cada hora tendría 1/24 ≈ 4,2% del total. Usamos el
+No hay una hora pico acordada (puede salir en cualquier hora, o no haber pico), así que
+no buscamos 7-8 am: la DETECTAMOS. Se cuentan los taps por hora del día (0-23) y la hora
+pico es la de más taps. Para medir qué tan fuerte es la comparamos con un reparto parejo:
+si los taps se repartieran igual, cada hora tendría 1/24 ≈ 4,2% del total. Usamos el
 cociente  pico / promedio por hora  (= participación del pico × 24):
-  1.0  -> la hora pico no se distingue de las demás (no hay pico);
-  >= 1.5 -> la hora pico tiene al menos 50% más taps que una hora promedio.
+  >= 1.5     -> pico claro (al menos 50% más taps que una hora promedio);
+  1.1 - 1.5  -> pico débil;
+  < 1.1      -> sin pico: reparto casi parejo, la "hora pico" es casi ruido.
 También se reporta la hora pico de cada ruta, que es la X del Task 5 (Markov).
 
 Decisiones (y por qué)
 ---------------------
 1. Hora pico al azar (cambio de B, 2026-10-16): si la fijáramos no tendría sentido
    analizar cuál es. Por eso el validador la detecta y nunca asume 7-8 am.
-2. Pico "claro" = al menos 1,5x una hora promedio: es un umbral simple de explicar
-   (50% más taps que una hora cualquiera). Si no se cumple es WARN, no FAIL.
+2. Fuerza del pico: claro >= 1,5x, débil 1,1-1,5x, sin pico < 1,1x una hora promedio.
+   Son umbrales simples de explicar. Se reporta como INFO: que no haya pico (o que salga
+   en cualquier hora) no es un error del CSV (2026-10-18, datos del generador de Felipe:
+   reparto parejo, 1,03x).
 3. Aceptamos el formato que entregó B (2026-10-17): tap_id con 8 dígitos (el esquema
    original decía 7) y timestamp con espacio en vez de "T". Se cambió el esquema, no el
    generador. Si cambia otra vez, basta con ajustar TAP_ID_DIGITS.
 4. Si no hay data/taps.csv se usa data/taps_10k.csv: mismo orden que los scripts de C.
 5. El CSV se lee todo como texto: se valida el valor tal como está escrito, antes de que
    pandas lo convierta.
+6. Transferencias entre 5% y 40% (2026-10-18): el generador sortea el % en ese rango para
+   cada dataset (p. ej. 23,7% en 10k y 5,5% en 100k), así que no se exige ~20%.
 
 Uso
 ---
@@ -71,8 +76,9 @@ MIN_ROWS = 10_000
 TARGET_CARDS = 3_000
 CARDS_TOLERANCE = 0.5            # aceptamos entre 1.500 y 4.500 tarjetas
 ROUTES_RANGE = (20, 30)
-TRANSFER_RANGE = (0.15, 0.25)    # ~20% de transferencias
-PEAK_RATIO_MIN = 1.5             # pico / promedio por hora (decisión 2)
+TRANSFER_RANGE = (0.05, 0.40)    # el generador sortea el % en este rango (decisión 6)
+PEAK_STRONG = 1.5                # pico / promedio por hora: pico claro (decisión 2)
+PEAK_WEAK = 1.1                  # por debajo de esto no hay pico (decisión 2)
 
 # Formato acordado con lo que entrega el generador de B (decisión 3). El esquema original
 # decía 7 dígitos y "T" en el timestamp; aceptamos lo que llegó. Si cambia, se ajusta aquí.
@@ -191,7 +197,7 @@ def check_targets(df: pd.DataFrame, parsed: dict, r: Report) -> None:
 
     share = parsed["flag"].dropna().astype(bool).mean()
     (r.ok if TRANSFER_RANGE[0] <= share <= TRANSFER_RANGE[1] else r.warn)(
-        f"Transferencias: {pct(share)} (objetivo ~20%)")
+        f"Transferencias: {pct(share)} (esperado entre 5% y 40%)")
 
     # Zipf: pocas rutas concentran muchos taps. Se reporta, no se exige un valor exacto.
     counts = df["route_id"].value_counts()
@@ -203,6 +209,15 @@ def check_targets(df: pd.DataFrame, parsed: dict, r: Report) -> None:
     if not ts.empty:
         days = ts.dt.normalize().nunique()
         r.info(f"Periodo: {ts.min()} -> {ts.max()} ({days} días con taps)")
+
+
+def peak_strength(ratio: float) -> str:
+    """Clasifica el pico según cuántas veces supera a una hora promedio (decisión 2)."""
+    if ratio >= PEAK_STRONG:
+        return "pico claro"
+    if ratio >= PEAK_WEAK:
+        return "pico débil"
+    return "sin pico (reparto casi parejo)"
 
 
 def check_peak(df: pd.DataFrame, parsed: dict, r: Report) -> None:
@@ -219,10 +234,8 @@ def check_peak(df: pd.DataFrame, parsed: dict, r: Report) -> None:
     peak_share = hourly[peak_hour] / total
     ratio = peak_share * 24  # = pico / promedio por hora
 
-    msg = (f"Hora pico detectada: {peak_hour:02d}:00-{(peak_hour + 1) % 24:02d}:00 con "
-           f"{pct(peak_share)} de los taps ({ratio:.2f}x una hora promedio)")
-    (r.ok if ratio >= PEAK_RATIO_MIN else r.warn)(
-        msg if ratio >= PEAK_RATIO_MIN else msg + f"; no hay un pico claro (se espera >= {PEAK_RATIO_MIN}x)")
+    r.info(f"Hora pico detectada: {peak_hour:02d}:00-{(peak_hour + 1) % 24:02d}:00 con "
+           f"{pct(peak_share)} de los taps ({ratio:.2f}x una hora promedio) -> {peak_strength(ratio)}")
 
     top = hourly.sort_values(ascending=False).head(3)
     r.info("Top 3 horas: " + ", ".join(f"{h:02d}h {pct(c / total)}" for h, c in top.items()))
@@ -234,7 +247,8 @@ def check_peak(df: pd.DataFrame, parsed: dict, r: Report) -> None:
     if len(per_day) > 1:
         dist = per_day.value_counts()
         r.info(f"Hora pico por día ({len(per_day)} días): "
-               + ", ".join(f"{h:02d}h en {c} días" for h, c in dist.head(5).items()))
+               + ", ".join(f"{h:02d}h en {c} días" for h, c in dist.head(5).items())
+               + f" | días que coinciden con la global: {int((per_day == peak_hour).sum())} de {len(per_day)}")
 
     # Hora pico por ruta: es la X del Task 5 (taps de una ruta en su hora pico).
     by_route = pd.DataFrame({"route": df.loc[hours.index, "route_id"], "hour": hours})

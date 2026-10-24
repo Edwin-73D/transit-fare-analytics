@@ -34,6 +34,9 @@ Decisiones (y por qué)
 4. Los taps se recorren en orden de timestamp, que es como llegarían en un stream real.
 5. Promedios con math.fsum (suma exacta): así el caso k >= N da 0 exacto y no 1e-16.
 6. Pendiente: correr de nuevo con el CSV de 100k cuando B lo entregue (más taps por ruta).
+7. El % de transferencias lo sortea el generador por dataset (entre 5% y 40%; p. ej. 23,7% en 10k
+   y 5,5% en 100k). Como las transferencias cuestan 0, los promedios exactos de 10k y 100k no
+   son comparables entre sí; lo que se compara es el error del muestreo dentro de cada dataset.
 
 Salida: results/task2_sampling.json
 

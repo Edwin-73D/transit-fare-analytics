@@ -13,17 +13,23 @@ Tomamos como referencia el Metro de Medellín, que registró **310,2 millones de
 |---|----------|-------|---------------|
 | S1 | Factor día hábil vs promedio anual | 1,2 | Los fines de semana y festivos tienen menos viajes, por eso un día hábil está por encima del promedio |
 | S2 | Taps por viaje | 1,3 | Algunos viajes incluyen transbordo a bus integrado o metrocable, lo que genera un tap extra |
-| S3 | % de taps del día en la hora más cargada (7–8 am) | 12% | La demanda se concentra en las horas pico de la mañana y la tarde |
+| S3 | % de taps del día en la hora más cargada | 12% | La demanda real del Metro se concentra en las horas pico de la mañana y la tarde. Es un supuesto de la operación real, no del dataset simulado (allí la hora pico sale al azar o no existe) |
 | S4 | Factor del minuto pico dentro de la hora pico | 2 | La llegada de pasajeros no es uniforme: hay ráfagas (llegada de trenes, cambio de turno) |
-| S5 | Tamaño de un registro | 200 bytes | Un registro JSON de ejemplo pesa 172 bytes; redondeamos por nombres de estación más largos |
+| S5 | Tamaño de un registro | 200 bytes | Medido en el dataset (`src/task1_bytes_per_tap.py`): **175 B por tap en JSON** y 66 B en CSV. Redondeamos a 200 B por nombres de estación más largos |
 | S6 | Sobrecosto de índices y metadatos | +50% → 300 bytes/tap | Índice por card_id y route_id para las consultas rápidas |
 | S7 | Réplicas | 3 | Tolerancia a fallos estándar en sistemas distribuidos |
 
-Registro de ejemplo (172 bytes):
+Registro de ejemplo (175 bytes, con el formato del generador):
 
 ```json
-{"tap_id": "T0000001", "timestamp": "2026-10-05T07:42:13", "card_id": "C004512", "route_id": "B-120", "station": "Universidad", "fare_amount": 2.75, "transfer_flag": false}
+{"tap_id": "T00000001", "timestamp": "2025-10-05 07:42:13", "card_id": "C004512", "route_id": "B-120", "station": "Universidad", "fare_amount": 3000.0, "transfer_flag": false}
 ```
+
+**Medición del tamaño real** (método tomado de la versión de Felipe; ver `src/task1_bytes_per_tap.py`):
+sobre los 100.000 taps generados, un tap ocupa **175,3 B en JSON** (con nombres de campo, como
+viajaría por un stream) y **66,2 B en CSV** (sin nombres de campo). El supuesto de 200 B queda del
+lado seguro (+14%). Guardar en un formato compacto tipo CSV reduciría el almacenamiento a cerca de
+un tercio.
 
 ## 3. Cálculos
 

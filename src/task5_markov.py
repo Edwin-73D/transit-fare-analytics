@@ -37,6 +37,11 @@ Decisiones (y por qué)
 7. Capacidad del Panel C = ceil(2 x media) por ruta: "el doble de la demanda promedio";
    Markov garantiza que se supera a lo sumo la mitad de los días. Además la línea queda
    en la escala de la gráfica de C (4 x media aplastaría las curvas).
+8. La hora pico puede salir en cualquier hora o no existir (2026-10-18: el generador de
+   Felipe reparte los taps casi parejo, 1,03x). Se reporta su fuerza con el mismo criterio del
+   validador (pico / hora promedio: claro >= 1,5x, débil 1,1-1,5x, sin pico < 1,1x). Si no hay
+   pico, X es "la hora más cargada", que es casi ruido; la comparación sigue siendo válida
+   porque Markov y Chebyshev se cumplen para cualquier X >= 0.
 
 Uso
 ---
@@ -63,6 +68,8 @@ DEFAULT_OUT = ROOT / "results" / "task5_markov.json"
 
 FACTORS = [1.0, 1.25, 1.5, 2.0, 3.0, 4.0]  # C = a * media (decisión 5)
 CAPACITY_FACTOR = 2.0                       # capacidad que se dibuja en el Panel C (decisión 7)
+PEAK_STRONG = 1.5                           # pico / hora promedio: pico claro (decisión 8)
+PEAK_WEAK = 1.1                             # por debajo no hay pico (decisión 8)
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +90,15 @@ def detect_peak_hour(df: pd.DataFrame) -> tuple[int, float, dict[str, int]]:
     peak = int(hourly.idxmax())
     per_day = df.groupby("day")["hour"].agg(lambda h: int(h.value_counts().idxmax()))
     return peak, float(hourly[peak] / hourly.sum()), per_day.to_dict()
+
+
+def peak_strength(ratio: float) -> str:
+    """Fuerza del pico según cuántas veces supera a una hora promedio (decisión 8)."""
+    if ratio >= PEAK_STRONG:
+        return "pico claro"
+    if ratio >= PEAK_WEAK:
+        return "pico débil"
+    return "sin pico"
 
 
 def peak_counts(df: pd.DataFrame, hour: int) -> pd.DataFrame:
@@ -201,7 +217,15 @@ def main() -> None:
     peak, peak_share, per_day = detect_peak_hour(df)
     matrix = peak_counts(df, peak)
     print(f"{len(df):,} taps, {matrix.shape[0]} rutas, {matrix.shape[1]} días ({path.name})")
-    print(f"Hora pico detectada: {peak:02d}:00-{(peak + 1) % 24:02d}:00 ({peak_share * 100:.1f}% de los taps)\n")
+    peak_ratio = peak_share * 24                       # = pico / promedio por hora
+    strength = peak_strength(peak_ratio)
+    days_match = sum(h == peak for h in per_day.values()) / len(per_day)
+    print(f"Hora pico detectada: {peak:02d}:00-{(peak + 1) % 24:02d}:00 ({peak_share * 100:.1f}% de los taps, "
+          f"{peak_ratio:.2f}x una hora promedio -> {strength}; coincide en {days_match:.0%} de los días)")
+    if strength != "pico claro":
+        print("  Ojo: no hay un pico claro; X es la hora más cargada (casi ruido). Las cotas siguen "
+              "siendo válidas porque Markov aplica a cualquier X >= 0.")
+    print()
 
     routes = [analyze_route(r, [int(x) for x in matrix.loc[r]], FACTORS) for r in matrix.index]
     pooled = analyze_pooled(matrix, FACTORS)
@@ -218,6 +242,9 @@ def main() -> None:
             "peak_hour": peak,
             "peak_share": round(peak_share, 4),
             "peak_hour_by_day": per_day,
+            "peak_ratio": round(peak_ratio, 3),
+            "peak_strength": strength,
+            "peak_days_match": round(days_match, 3),
             "X": "taps de la ruta en la hora pico detectada, un valor por día",
             "factors": FACTORS,
             "capacity_factor": args.capacity_factor,
