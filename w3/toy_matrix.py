@@ -21,7 +21,8 @@ Qué se espera de cada ruta (respuesta conocida, para verificar los tasks)
 - B-201: nadie hace transbordo HACIA ella (alimentadora sin transbordos desde las troncales),
   así que una vez que se sale no se vuelve -> TRANSITORIA. Es el caso que el W3 pide al generador.
 - B-202: fila de ceros (ruta sin salida, "dangling"). La matriz no queda estocástica en esa fila:
-  cada task debe decir cómo la trata (PageRank: reparte su masa uniformemente entre todas).
+  cada task debe decir cómo la trata. Task 1: estado absorbente (lazo), o sea una clase cerrada
+  de un solo estado. PageRank: reparte su masa uniformemente entre todas.
 
 Pasajeros (taps por ruta) para comparar rankings
 ------------------------------------------------
@@ -58,9 +59,10 @@ RIDERSHIP = {"L-A": 500, "L-B": 400, "B-201": 300, "L-C": 150, "B-202": 120}
 
 # Respuesta conocida de las clases comunicantes (sirve para verificar el Task 1 y los demás).
 EXPECTED_CLASSES = [
-    {"routes": ["L-A", "L-B", "L-C"], "closed": True, "type": "recurrent", "period": 1},
-    {"routes": ["B-201"], "closed": False, "type": "transient", "period": None},
-    {"routes": ["B-202"], "closed": None, "type": "dangling (depende del tratamiento)", "period": None},
+    {"routes": ["L-A", "L-B", "L-C"], "closed": True, "type": "recurrent", "period": 1, "absorbing": False},
+    # B-202 no tiene salida: el Task 1 la trata como absorbente (lazo) para clasificar.
+    {"routes": ["B-202"], "closed": True, "type": "recurrent", "period": 1, "absorbing": True},
+    {"routes": ["B-201"], "closed": False, "type": "transient", "period": None, "absorbing": False},
 ]
 
 
@@ -112,16 +114,11 @@ def main() -> None:
         print(f"{r:>7}" + "".join(f"{v:>8.3f}" for v in row) + f"   {sum(row):.1f}")
     print(f"\nRutas sin salida (dangling): {data['dangling']}")
 
-    # Verificación independiente de las clases con componentes fuertemente conexas (scipy).
-    from scipy.sparse.csgraph import connected_components
-    import numpy as np
-    n, labels = connected_components(np.array(m), directed=True, connection="strong")
-    groups: dict[int, list[str]] = {}
-    for r, lab in zip(routes, labels):
-        groups.setdefault(lab, []).append(r)
-    print(f"Clases comunicantes (scipy, {n}): {sorted(groups.values(), key=len, reverse=True)}")
-    print("Esperado: [L-A, L-B, L-C] recurrente y aperiódica; [B-201] transitoria; [B-202] dangling")
-
+    # Verificación de las clases con el SCC propio del Task 1 (Kosaraju).
+    from w3_task1_dtmc import clasificar
+    clases = clasificar(routes, m)
+    print(f"Clases comunicantes (Task 1, {len(clases)}): {[(c['routes'], c['type']) for c in clases]}")
+    print("Coincide con la respuesta conocida:", clases == EXPECTED_CLASSES)
 
 if __name__ == "__main__":
     main()
